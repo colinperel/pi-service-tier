@@ -14,6 +14,7 @@ import {
   DEFAULT_SERVICE_TIER_CONFIG,
   SERVICE_TIER_PROVIDER_DEFINITIONS,
   applyServiceTierToPayload,
+  getServiceTierProviderForModel,
   isServiceTierProvider,
   resolveEffectiveServiceTier,
   setProviderServiceTier,
@@ -26,6 +27,7 @@ import {
 import {
   getServiceTierConfigPath,
   loadServiceTierConfig,
+  parseServiceTierFlag,
   writeServiceTierConfigSnapshot,
 } from "./config.ts";
 import { createServiceTierSections } from "./settings.ts";
@@ -136,8 +138,35 @@ export default function (pi: ExtensionAPI) {
     }
   };
 
+  pi.registerFlag("service-tier", {
+    type: "string",
+    description:
+      "Service tier defaults for this process over the global config: off, or provider:tier pairs such as openai-codex:priority,anthropic:off.",
+  });
+
+  // Flag values arrive after loading; parse them once, on first use.
+  let flagSettings: ServiceTierSettings | undefined;
+  const loadFlagSettings = (): ServiceTierSettings => {
+    if (flagSettings) return flagSettings;
+    const value = pi.getFlag("service-tier");
+    flagSettings = {};
+    if (typeof value === "string") {
+      try {
+        flagSettings = parseServiceTierFlag(value);
+      } catch (error) {
+        console.warn(`pi-service-tier: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+    return flagSettings;
+  };
+
+  /** Global config with this process's `--service-tier` on top; never persisted. */
+  const loadDefaults = (
+    config = loadConfigOrDefault(),
+  ): ServiceTierSettings => ({ ...config, ...loadFlagSettings() });
+
   // Register during loading, before either extension starts its session.
-  registerAgentHooks(pi.events, loadConfigOrDefault);
+  registerAgentHooks(pi.events, () => loadDefaults());
 
   const loadConfigForCommand = (
     ctx: ExtensionCommandContext,
@@ -155,8 +184,9 @@ export default function (pi: ExtensionAPI) {
   };
 
   const effectiveSettings = (
-    defaults = loadConfigOrDefault(),
-  ): ServiceTierSettings => mergeServiceTierSettings(defaults, sessionOverrides);
+    config = loadConfigOrDefault(),
+  ): ServiceTierSettings =>
+    mergeServiceTierSettings(loadDefaults(config), sessionOverrides);
 
   const refreshServiceTier = (
     ctx: ExtensionContext,
@@ -191,7 +221,12 @@ export default function (pi: ExtensionAPI) {
     pi.registerCommand(speed, {
       description: `Toggle ${speed} service tier for the current provider in this session.`,
       handler: async (_args, ctx) => {
-        const config = loadConfigForCommand(ctx);
+        // A flag value for this provider is the default requests use even when
+        // the global file is malformed, so toggle from that same fallback.
+        const provider = getServiceTierProviderForModel(ctx.model);
+        const config = provider && Object.hasOwn(loadFlagSettings(), provider)
+          ? loadConfigOrDefault()
+          : loadConfigForCommand(ctx);
         if (!config) return;
 
         const result = toggleServiceTierSpeed(effectiveSettings(config), ctx.model, speed);
