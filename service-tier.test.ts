@@ -316,6 +316,62 @@ test("resolveEffectiveServiceTier only enables matching built-in providers", () 
   );
 });
 
+test("account aliases on a provider's official endpoint share its service tier", () => {
+  const config = {
+    anthropic: "priority",
+    "openai-codex": "priority",
+    "google-vertex": "flex",
+  } as const;
+
+  assert.equal(
+    resolveEffectiveServiceTier(config, {
+      provider: "anthropic-2",
+      api: "anthropic-messages",
+      baseUrl: "https://api.anthropic.com",
+    }),
+    "priority",
+  );
+  assert.equal(
+    resolveEffectiveServiceTier(config, {
+      provider: "openai-codex-2",
+      api: "openai-codex-responses",
+      baseUrl: "https://chatgpt.com/backend-api",
+    }),
+    "priority",
+  );
+  // Pi's built-in Vertex models keep the {location} template literally.
+  assert.equal(
+    resolveEffectiveServiceTier(config, {
+      provider: "google-vertex-2",
+      api: "google-vertex",
+      baseUrl: "https://{location}-aiplatform.googleapis.com",
+    }),
+    "flex",
+  );
+  // Only the exact built-in spelling counts; anything else safely gets no tier.
+  assert.equal(
+    resolveEffectiveServiceTier(config, {
+      provider: "anthropic-2",
+      api: "anthropic-messages",
+      baseUrl: "https://api.anthropic.com/",
+    }),
+    "",
+  );
+  // Third-party endpoints speaking the same API are not aliases.
+  assert.equal(
+    resolveEffectiveServiceTier(config, {
+      provider: "anthropic-proxy",
+      api: "anthropic-messages",
+      baseUrl: "https://proxy.example.com",
+    }),
+    "",
+  );
+  assert.equal(
+    modelSupportsServiceTier({ provider: "anthropic-2", api: "anthropic-messages" }),
+    false,
+  );
+});
+
 test("applyServiceTierToPayload injects provider-specific service tier values", () => {
   const config = {
     openai: "priority",
